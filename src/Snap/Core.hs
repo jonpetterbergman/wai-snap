@@ -3,16 +3,22 @@ module Snap.Core where
 
 import           Blaze.ByteString.Builder     (Builder)
 import           Data.ByteString              (ByteString)
+import qualified Data.ByteString.Char8      as Char8
 
-import           Control.Monad.State          (State)
+import           Control.Monad.State          (StateT,runStateT)
 import           Data.CaseInsensitive         (CI)  
 import           Data.HashMap.Strict          (HashMap)   
+import qualified Data.HashMap.Strict        as HashMap
 import           Data.Map                     (Map)
+import qualified Data.Map                   as Map
 import           Data.Time                    (UTCTime)
 import           Data.Int                     (Int64)
 
+import           Network.Wai                  (Application)
+import qualified Network.Wai               as  Wai
+
 newtype Snap a = Snap {
-  unSnap :: State SnapState (SnapResult a)
+  unSnap :: StateT SnapState IO (SnapResult a)
   }
                  
 data ResponseBody =                 
@@ -27,6 +33,45 @@ data SnapState = SnapState
   , _snapModifyTimeout :: (Int -> Int) -> IO ()
   }
   
+snapToWai :: Snap a -> Application  
+snapToWai (Snap m) aReq aCont = do
+    (r,ss') <- runStateT m $ SnapState req dresp dummyLog (const $ return ())
+    let resp = case r of
+                 SnapValue _ -> _snapResponse ss'
+                 PassOnProcessing _ -> fourohfour
+                 EarlyTermination x -> x
+    let req' = _snapRequest ss'
+    aCont $ convertResponse resp
+  where dresp = emptyResponse { rspHttpVersion = rqVersion req }
+        req = convertRequest aReq
+        
+fourohfour :: Response        
+fourohfour = setResponseBody body404 $ emptyResponse        
+        
+body404 :: Builder             
+body404 = undefined
+             
+-- | Sets an HTTP response body to the given 'Builder' value.             
+setResponseBody     :: Builder  -- ^ new response body builder
+                    -> Response -- ^ response to modify
+                    -> Response
+setResponseBody b r = r { rspBody = ResponseBuilder b }
+
+dummyLog :: ByteString -> IO ()        
+dummyLog = Char8.putStrLn
+        
+convertRequest :: Wai.Request -> Request
+convertRequest = undefined                            
+
+convertResponse :: Response -> Wai.Response
+convertResponse = undefined  
+
+-- | An empty 'Response'.
+emptyResponse :: Response
+emptyResponse = Response emptyHeaders Map.empty (1,1) Nothing
+                         ResponseEmpty
+                         200 "OK" False True
+                            
 -- | Enumerates the HTTP method values (see
 -- <http://tools.ietf.org/html/rfc2068.html#section-5.1.1>).
 data Method  = GET | HEAD | POST | PUT | DELETE | TRACE | OPTIONS | CONNECT |
@@ -64,6 +109,8 @@ data SnapResult a = SnapValue a
 newtype Headers = H { unH :: HashMap (CI ByteString) [ByteString] }                    
   deriving (Show)
                     
+emptyHeaders = H (HashMap.empty)           
+           
 -- | Contains all of the information about an incoming HTTP request.
 data Request = Request
     { -- | The server name of the request, as it came in from the request's
