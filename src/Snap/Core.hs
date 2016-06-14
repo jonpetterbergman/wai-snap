@@ -1,7 +1,7 @@
 {-# language OverloadedStrings #-}
 module Snap.Core where
 
-import           Blaze.ByteString.Builder     (Builder)
+import           Blaze.ByteString.Builder     (Builder,fromByteString)
 import           Data.ByteString              (ByteString)
 import qualified Data.ByteString.Char8      as Char8
 
@@ -16,6 +16,7 @@ import           Data.Int                     (Int64)
 
 import           Network.Wai                  (Application)
 import qualified Network.Wai               as  Wai
+import           Network.Socket               (SockAddr(..))
 
 newtype Snap a = Snap {
   unSnap :: StateT SnapState IO (SnapResult a)
@@ -33,23 +34,37 @@ data SnapState = SnapState
   , _snapModifyTimeout :: (Int -> Int) -> IO ()
   }
   
-snapToWai :: Snap a -> Application  
-snapToWai (Snap m) aReq aCont = do
+snapToWai :: Snap a -> Int -> Application  
+snapToWai (Snap m) serverPort aReq aCont = do
     (r,ss') <- runStateT m $ SnapState req dresp dummyLog (const $ return ())
     let resp = case r of
                  SnapValue _ -> _snapResponse ss'
-                 PassOnProcessing _ -> fourohfour
+                 PassOnProcessing _ -> fourohfour req
                  EarlyTermination x -> x
     let req' = _snapRequest ss'
     aCont $ convertResponse resp
   where dresp = emptyResponse { rspHttpVersion = rqVersion req }
-        req = convertRequest aReq
+        req = convertRequest serverPort aReq
         
-fourohfour :: Response        
-fourohfour = setResponseBody body404 $ emptyResponse        
+fourohfour :: Request -> Response        
+fourohfour req = clearContentLength $
+             setResponseStatus 404 "Not Found" $ 
+             setResponseBody (body404 req) $ 
+             emptyResponse        
         
-body404 :: Builder             
-body404 = undefined
+body404 :: Request -> Builder             
+body404 req = mconcat $ map fromByteString html
+  where html = [ Char8.concat [ "<!DOCTYPE html>\n"
+                              , "<html>\n"
+                              , "<head>\n"
+                              , "<title>Not found</title>\n"
+                              , "</head>\n"
+                              , "<body>\n"
+                              , "<code>No handler accepted \""
+                              ]
+               , rqURI req
+               , "\"</code>\n</body></html>"
+               ]
              
 -- | Sets an HTTP response body to the given 'Builder' value.             
 setResponseBody     :: Builder  -- ^ new response body builder
@@ -57,11 +72,33 @@ setResponseBody     :: Builder  -- ^ new response body builder
                     -> Response
 setResponseBody b r = r { rspBody = ResponseBuilder b }
 
+-- | Sets the HTTP response status. Note: normally you would use
+-- 'setResponseCode' unless you needed a custom response explanation.
+setResponseStatus   :: Int        -- ^ HTTP response integer code
+                    -> ByteString -- ^ HTTP response explanation
+                    -> Response   -- ^ Response to be modified
+                    -> Response
+setResponseStatus s reason r = r { rspStatus = s, rspStatusReason = reason }
+
+-- | Removes any @Content-Length@ set in the 'Response'.
+clearContentLength :: Response -> Response
+clearContentLength r = r { rspContentLength = Nothing }
+
 dummyLog :: ByteString -> IO ()        
 dummyLog = Char8.putStrLn
         
-convertRequest :: Wai.Request -> Request
-convertRequest = undefined                            
+convertRequest :: Int -> Wai.Request -> Request
+convertRequest serverPort req = 
+  Request {
+    rqServerName = maybe "" id $ Wai.requestHeaderHost req
+  , rqServerPort = serverPort 
+  , rqRemoteAddr = getAddr $ Wai.remoteHost req }
+  where getPort (SockAddrInet n _) = Just n
+        getPort (SockAddrInet6 n _ _ _) = Just n
+        getPort _ = Nothing
+        getAddr (SockAddrInet _ a) = Just a
+        getAddr (SockAddrInet6 _ _ a _) = Just a
+        getAddr _ = Nothing
 
 convertResponse :: Response -> Wai.Response
 convertResponse = undefined  
@@ -121,10 +158,10 @@ data Request = Request
     , rqServerPort     :: !Int
       
       -- | The remote IP address.
-    , rqRemoteAddr     :: ByteString
+    , rqRemoteAddr     :: Maybe ByteString
       
       -- | The remote TCP port number.
-    , rqRemotePort     :: Int
+    , rqRemotePort     :: Maybe Int
       
       -- | The local IP address for this request.
     , rqLocalAddr      :: ByteString
