@@ -9,7 +9,7 @@ module Snap.Internal.Http.Server.Date
 import           Control.Exception
 import           Control.Monad
 import           Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8 as S
+import qualified Data.ByteString as S
 import           Data.ByteString.Internal (c2w,w2c)
 import           Data.IORef
 import           Foreign.C.Types
@@ -38,6 +38,9 @@ formatHttpTime :: CTime -> IO ByteString
 -- | Converts a 'CTime' into common log entry format.
 formatLogTime :: CTime -> IO ByteString
 
+-- | Converts an HTTP timestamp into a 'CTime'.
+parseHttpTime :: ByteString -> IO CTime
+
 ------------------------------------------------------------------------------
 formatHttpTime = return . format . toUTCTime
   where
@@ -65,7 +68,7 @@ formatLogTime ctime = do
 parseHttpTime = return . toCTime . prs . toStr
   where
     prs :: String -> Maybe UTCTime
-    prs = parseTime defaultTimeLocale "%a, %d %b %Y %H:%M:%S GMT"
+    prs = parseTimeM True defaultTimeLocale "%a, %d %b %Y %H:%M:%S GMT"
 
     toCTime :: Maybe UTCTime -> CTime
     toCTime (Just t) = fromInteger $ truncate $ utcTimeToPOSIXSeconds t
