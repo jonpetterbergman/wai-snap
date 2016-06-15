@@ -17,8 +17,10 @@ extra-source-files:  README.md
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     Snap.Core
-  -- other-modules:       
+  exposed-modules:     Snap.Core,
+                       System.FastLogger
+  other-modules:       Control.Concurrent.Extended,
+                       Snap.Internal.Http.Server.Date
   -- other-extensions:    
   build-depends:       base >=4.8 && <4.9,
                        containers >= 0.5.6.2,
@@ -29,6 +31,10 @@ library
                        blaze-builder >= 0.4.0.2,
                        time >= 1.5.0.1,
                        wai >= 3.2.1,
-                       network >=2.6.2.1
+                       network >=2.6.2.1,
+                       text >=1.2.2.1,
+                       http-types >=0.8.6,
+                       transformers >=0.4.2.0,
+                       unix-compat >=0.4.2.0
   hs-source-dirs:      src
   default-language:    Haskell2010
