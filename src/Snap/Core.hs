@@ -9,7 +9,7 @@ import           Blaze.ByteString.Builder     (Builder,fromByteString)
 import           Data.ByteString              (ByteString)
 import qualified Data.ByteString.Char8      as Char8
 
-import           Control.Monad.State          (StateT,runStateT)
+import           Control.Monad.State          (StateT,runStateT,get,modify)
 import           Control.Monad.Except         (MonadError(..))
 import           Control.Monad.IO.Class       (MonadIO(..))
 import           Control.Monad                (ap,liftM,MonadPlus(..))
@@ -21,12 +21,47 @@ import           Data.Map                     (Map)
 import qualified Data.Map                   as Map
 import           Data.Time                    (UTCTime)
 import           Data.Int                     (Int64)
+import qualified Data.List                  as List
 
 import           Network.Wai                  (Application)
 import           Network.Wai.Internal         (Response(..),Request(..))
 import qualified Network.Wai               as  Wai
 import           Network.Socket               (SockAddr(..))
 import           Network.HTTP.Types.Status    (mkStatus) 
+import           Network.HTTP.Types.Header    (Header)
+
+-- | A datatype representing an HTTP cookie.
+data Cookie = Cookie {
+        -- | The name of the cookie.
+        cookieName      :: !ByteString
+        
+        -- | The cookie's string value.
+      , cookieValue     :: !ByteString
+                              
+        -- | The cookie's expiration value, if it has one.
+      , cookieExpires   :: !(Maybe UTCTime)
+                                     
+        -- | The cookie's \"domain\" value, if it has one.
+      , cookieDomain    :: !(Maybe ByteString)
+                                                                                  
+        -- | The cookie path.
+      , cookiePath      :: !(Maybe ByteString)
+                                                                                                            
+        -- | Tag as secure cookie?
+      , cookieSecure    :: !Bool
+        
+        -- | HttpOnly?
+      , cookieHttpOnly  :: !Bool
+      } deriving (Eq, Show)
+
+type Headers = [Header]
+
+class HasHeaders a where
+      -- | Modify the datatype's headers.
+      updateHeaders :: (Headers -> Headers) -> a -> a
+      
+      -- | Retrieve the headers from a datatype that has headers.
+      headers       :: a -> Headers
 
 newtype Snap a = Snap {
   unSnap :: StateT SnapState IO (SnapResult a)
@@ -165,3 +200,32 @@ setResponseStatus s reason _ = ResponseBuilder (mkStatus s reason) [] mempty
 dummyLog :: ByteString -> IO ()        
 dummyLog = Char8.putStrLn
         
+-- | Grabs the 'Request' object out of the 'Snap' monad.  
+getRequest :: MonadSnap m => m Request
+getRequest = liftSnap $ liftM _snapRequest sget
+
+
+-- | Grabs something out of the 'Request' object, using the given projection
+-- function. See 'gets'.
+getsRequest :: MonadSnap m => (Request -> a) -> m a
+getsRequest f = liftSnap $ liftM (f . _snapRequest) sget
+
+-- | Local Snap version of 'get'.
+sget :: Snap SnapState
+sget = Snap $ liftM SnapValue get
+
+-- | Puts a new 'Request' object into the 'Snap' monad.
+putRequest :: MonadSnap m => Request -> m ()
+putRequest r = liftSnap $ smodify $ \ss -> ss { _snapRequest = r }
+
+-- | Local Snap monad version of 'modify'.
+smodify :: (SnapState -> SnapState) -> Snap ()
+smodify f = Snap $ modify f >> return (SnapValue ())
+
+-- | Gets a header value out of a 'HasHeaders' datatype. If many headers came
+-- in with the same name, they will be catenated together.
+getHeader :: (HasHeaders a) => CI ByteString -> a -> Maybe ByteString
+getHeader k a = 
+  case map snd $ List.filter ((== k) . fst) $ headers a of
+    [] -> Nothing
+    xs -> Just $ Char8.intercalate "," xs
