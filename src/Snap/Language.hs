@@ -33,9 +33,6 @@ import qualified Data.ByteString               as B
 import qualified Data.ByteString.Char8         as BC
 import           Data.Char                       (toLower)
 import           Data.List                       (intersperse,isPrefixOf,find)
-import           Data.Text                       (Text,intercalate)
-import           Data.Text.Encoding              (encodeUtf8)
-import qualified Data.Text                     as T
 import           Control.Applicative             ((*>),(<$>),(<*>),(<|>))
 import           Snap.Core                       (getsRequest,
                                                   getRequest,
@@ -47,8 +44,9 @@ import           Snap.Core                       (getsRequest,
                                                   modifyResponse,
                                                   getCookie,
                                                   setHeader,
-                                                  pass)
-import           Network.Wai.Internal            (Request(..))  
+                                                  pass,
+                                                  rqPathInfo,
+                                                  setRqPathInfo)
 import           Data.Maybe                      (mapMaybe,
                                                   listToMaybe)
 import           Data.Map                        (Map,
@@ -119,23 +117,19 @@ getAcceptLanguage rangeMapping =
 type RangeMapping a = Map String a
 
 removeSuffix :: ByteString
-             -> [Text]
-             -> Maybe [Text]
-removeSuffix suf x =              
-  case reverse x of
-    [] -> Nothing
-    (h:t) -> if suf `B.isSuffixOf` (encodeUtf8 h) then 
-               Just $ reverse (T.take ((T.length h) - (B.length suf)) h:t) else 
-               Nothing
+             -> ByteString
+             -> Maybe ByteString
+removeSuffix suf x | suf `B.isSuffixOf` x = Just $ B.take ((B.length x) - (B.length suf)) x
+                   | otherwise            = Nothing
 
 suffixes :: RangeMapping a
          -> [(ByteString,a)]
 suffixes = map go . toList
   where go (str,val) = (BC.pack $ '.':str,val)
 
-matchSuffix :: [Text]
+matchSuffix :: ByteString
             -> [(ByteString,a)]
-            -> Maybe ([Text],a)
+            -> Maybe (ByteString,a)
 matchSuffix str sfxs = listToMaybe $ mapMaybe go sfxs
   where go (sfx,val) = fmap (,val) $ removeSuffix sfx str
 
@@ -159,11 +153,11 @@ getSuffixLanguage :: MonadSnap m
 getSuffixLanguage rangeMapping = 
   do
     r <- getRequest
-    case matchSuffix (pathInfo r) $ suffixes rangeMapping of
+    case matchSuffix (rqPathInfo r) $ suffixes rangeMapping of
       Nothing -> pass
-      Just (pathInfo',val) -> 
+      Just (rqPathInfo',val) -> 
         do
-          putRequest $ r { pathInfo = pathInfo' }
+          putRequest $ setRqPathInfo rqPathInfo' r
           return val
 
 -- | Change, or remove, the language suffix of an URI.
@@ -173,12 +167,10 @@ switchSuffixLanguage :: Eq a
                      -> Maybe a    -- ^ The language to be appended to the URI, or Nothing to remove language suffix.
                      -> ByteString
 switchSuffixLanguage rangeMapping uri lang = maybe (addSuffix lang path) (addSuffix lang . fst) $ matchSuffix path $ suffixes rangeMapping
-  where (path,params)    = let (path',params) = BC.break ((==) '?') uri in (splitText path',params)
-        addSuffix lang p = B.concat [joinBs p,findSfx lang,params]
+  where (path,params)    = BC.break ((==) '?') uri
+        addSuffix lang p = B.concat [p,findSfx lang,params]
         findSfx Nothing  = B.empty
         findSfx (Just l) = maybe B.empty id $ lookup l $ map swap $ suffixes rangeMapping
-        splitText = undefined
-        joinBs = undefined
 
 -- | Set the Content-Language header in the response.
 setContentLanguage :: (Eq a, MonadSnap m)

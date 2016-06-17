@@ -18,10 +18,10 @@ cabal-version:       >=1.10
 
 library
   exposed-modules:     Snap.Core,
-                       System.FastLogger
-  other-modules:       Control.Concurrent.Extended,
-                       Snap.Internal.Http.Server.Date,
+                       System.FastLogger,
                        Snap.Language
+  other-modules:       Control.Concurrent.Extended,
+                       Snap.Internal.Http.Server.Date
   -- other-extensions:    
   build-depends:       base >=4.8 && <4.9,
                        containers >= 0.5.6.2,

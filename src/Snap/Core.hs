@@ -29,7 +29,7 @@ import           Network.Wai                  (Application)
 import           Network.Wai.Internal         (Response(..),Request(..))
 import qualified Network.Wai               as  Wai
 import           Network.Socket               (SockAddr(..))
-import           Network.HTTP.Types           (hCookie)
+import           Network.HTTP.Types           (hCookie,decodePathSegments)
 import           Network.HTTP.Types.Status    (mkStatus) 
 import           Network.HTTP.Types.Header    (Header)
 import           Web.Cookie                   (Cookies,parseCookies,SetCookie,renderSetCookie)
@@ -241,6 +241,9 @@ setHeader k v = updateHeaders (((k,v):) . List.filter ((/= k) . fst))
     
 rqPathInfo :: Request -> ByteString
 rqPathInfo = encodeUtf8 . mconcat . pathInfo
+
+setRqPathInfo :: ByteString -> Request -> Request
+setRqPathInfo b r = r { pathInfo = decodePathSegments b }
 
 -- | Modifes the 'Response' object stored in a 'Snap' monad.
 modifyResponse :: MonadSnap m => (Response -> Response) -> m ()
