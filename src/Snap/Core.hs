@@ -20,7 +20,8 @@ import           Data.HashMap.Strict          (HashMap)
 import qualified Data.HashMap.Strict        as HashMap
 import           Data.Map                     (Map)
 import qualified Data.Map                   as Map
-import           Data.Maybe                   (listToMaybe)
+import qualified Data.IntMap                as IM
+import           Data.Maybe                   (listToMaybe,fromMaybe)
 import           Data.Time                    (UTCTime)
 import           Data.Int                     (Int64)
 import qualified Data.List                  as List
@@ -30,7 +31,7 @@ import           Network.Wai                  (Application)
 import           Network.Wai.Internal         (Response(..),Request(..))
 import qualified Network.Wai               as  Wai
 import           Network.Socket               (SockAddr(..))
-import           Network.HTTP.Types           (hCookie,decodePathSegments)
+import           Network.HTTP.Types           (hCookie,decodePathSegments,hContentType,hContentLength)
 import           Network.HTTP.Types.Status    (mkStatus) 
 import           Network.HTTP.Types.Header    (Header)
 import           Web.Cookie                   (Cookies,parseCookies,SetCookie,renderSetCookie)
@@ -209,6 +210,22 @@ setResponseStatus s reason (ResponseBuilder _ h b) = ResponseBuilder (mkStatus s
 setResponseStatus s reason (ResponseStream _ h b) = ResponseStream (mkStatus s reason) h b
 setResponseStatus s reason _ = ResponseBuilder (mkStatus s reason) [] mempty
 
+-- | Sets the @Content-Type@ in the 'Response' headers.
+setContentType      :: ByteString -> Response -> Response
+setContentType = setHeader hContentType
+
+-- | Sets content length, in the headers
+setContentLength :: Int64 -> Response -> Response
+setContentLength n = setHeader hContentLength (Char8.pack $ show n)
+
+-- | Sets the HTTP response code.
+setResponseCode   :: Int        -- ^ HTTP response integer code
+                  -> Response   -- ^ Response to be modified
+                  -> Response
+setResponseCode s r = setResponseStatus s reason r
+  where
+    reason = fromMaybe "Unknown" (IM.lookup s statusReasonMap)
+
 dummyLog :: ByteString -> IO ()        
 dummyLog = Char8.putStrLn
         
@@ -297,3 +314,47 @@ writeLBS s = writeBuilder $ fromLazyByteString s
 -- | 'Snap' monad state.
 writeBuilder :: MonadSnap m => Builder -> m ()
 writeBuilder b = modifyResponse $ modifyResponseBody (`mappend` b)
+
+statusReasonMap :: IM.IntMap ByteString
+statusReasonMap = IM.fromList [
+  (100, "Continue"),
+  (101, "Switching Protocols"),
+  (200, "OK"),
+  (201, "Created"),
+  (202, "Accepted"),
+  (203, "Non-Authoritative Information"),
+  (204, "No Content"),
+  (205, "Reset Content"),
+  (206, "Partial Content"),
+  (300, "Multiple Choices"),
+  (301, "Moved Permanently"),
+  (302, "Found"),
+  (303, "See Other"),
+  (304, "Not Modified"),
+  (305, "Use Proxy"),
+  (307, "Temporary Redirect"),
+  (400, "Bad Request"),
+  (401, "Unauthorized"),
+  (402, "Payment Required"),
+  (403, "Forbidden"),
+  (404, "Not Found"),
+  (405, "Method Not Allowed"),
+  (406, "Not Acceptable"),
+  (407, "Proxy Authentication Required"),
+  (408, "Request Time-out"),
+  (409, "Conflict"),
+  (410, "Gone"),
+  (411, "Length Required"),
+  (412, "Precondition Failed"),
+  (413, "Request Entity Too Large"),
+  (414, "Request-URI Too Large"),
+  (415, "Unsupported Media Type"),
+  (416, "Requested range not satisfiable"),
+  (417, "Expectation Failed"),
+  (500, "Internal Server Error"),
+  (501, "Not Implemented"),
+  (502, "Bad Gateway"),
+  (503, "Service Unavailable"),
+  (504, "Gateway Time-out"),
+  (505, "HTTP Version not supported")
+  ]

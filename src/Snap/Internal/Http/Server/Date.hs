@@ -4,6 +4,8 @@
 module Snap.Internal.Http.Server.Date
 ( getDateString
 , getLogDateString
+, parseHttpTime
+, formatHttpTime
 , getCurrentDateTime) where
 
 import           Control.Exception

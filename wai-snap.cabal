@@ -20,7 +20,8 @@ library
   exposed-modules:     Snap.Core,
                        System.FastLogger,
                        Snap.Language,
-                       Snap.Blaze
+                       Snap.Blaze,
+                       Snap.Util.FileServe
   other-modules:       Control.Concurrent.Extended,
                        Snap.Internal.Http.Server.Date
   -- other-extensions:    
