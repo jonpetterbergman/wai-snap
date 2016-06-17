@@ -5,7 +5,7 @@
 {-# language MultiParamTypeClasses #-}
 module Snap.Core where
 
-import           Blaze.ByteString.Builder     (Builder,fromByteString)
+import           Blaze.ByteString.Builder     (Builder,fromByteString,toByteString)
 import           Data.ByteString              (ByteString)
 import qualified Data.ByteString.Char8      as Char8
 
@@ -19,40 +19,28 @@ import           Data.HashMap.Strict          (HashMap)
 import qualified Data.HashMap.Strict        as HashMap
 import           Data.Map                     (Map)
 import qualified Data.Map                   as Map
+import           Data.Maybe                   (listToMaybe)
 import           Data.Time                    (UTCTime)
 import           Data.Int                     (Int64)
 import qualified Data.List                  as List
+import           Data.Text.Encoding           (encodeUtf8)
 
 import           Network.Wai                  (Application)
 import           Network.Wai.Internal         (Response(..),Request(..))
 import qualified Network.Wai               as  Wai
 import           Network.Socket               (SockAddr(..))
+import           Network.HTTP.Types           (hCookie)
 import           Network.HTTP.Types.Status    (mkStatus) 
 import           Network.HTTP.Types.Header    (Header)
+import           Web.Cookie                   (Cookies,parseCookies,SetCookie,renderSetCookie)
 
--- | A datatype representing an HTTP cookie.
-data Cookie = Cookie {
-        -- | The name of the cookie.
-        cookieName      :: !ByteString
-        
-        -- | The cookie's string value.
-      , cookieValue     :: !ByteString
-                              
-        -- | The cookie's expiration value, if it has one.
-      , cookieExpires   :: !(Maybe UTCTime)
-                                     
-        -- | The cookie's \"domain\" value, if it has one.
-      , cookieDomain    :: !(Maybe ByteString)
-                                                                                  
-        -- | The cookie path.
-      , cookiePath      :: !(Maybe ByteString)
-                                                                                                            
-        -- | Tag as secure cookie?
-      , cookieSecure    :: !Bool
-        
-        -- | HttpOnly?
-      , cookieHttpOnly  :: !Bool
-      } deriving (Eq, Show)
+type Cookie = SetCookie
+
+-- | Fails out of a 'Snap' monad action.  This is used to indicate
+-- that you choose not to handle the given request within the given
+-- handler.
+pass :: MonadSnap m => m a
+pass = empty
 
 type Headers = [Header]
 
@@ -62,6 +50,11 @@ class HasHeaders a where
       
       -- | Retrieve the headers from a datatype that has headers.
       headers       :: a -> Headers
+
+instance HasHeaders Request where
+  updateHeaders f r = r { requestHeaders = f (requestHeaders r) }
+  headers = requestHeaders
+  
 
 newtype Snap a = Snap {
   unSnap :: StateT SnapState IO (SnapResult a)
@@ -186,6 +179,17 @@ setResponseBody b (ResponseBuilder s h _) = ResponseBuilder s h b
 setResponseBody b (ResponseStream s h _) = ResponseBuilder s h b
 setResponseBody b _ = ResponseBuilder (mkStatus 200 "OK") [] b
 
+instance HasHeaders Response where
+  updateHeaders f (ResponseFile s h fi fp) = ResponseFile s (f h) fi fp
+  updateHeaders f (ResponseBuilder s h b) = ResponseBuilder s (f h) b
+  updateHeaders f (ResponseStream s h st) = ResponseStream s (f h) st
+  updateHeaders _ r = r
+  headers (ResponseFile _ h _ _) = h
+  headers (ResponseBuilder _ h _) = h
+  headers (ResponseStream _ h _ ) = h
+  headers _ = []
+
+
 -- | Sets the HTTP response status. Note: normally you would use
 -- 'setResponseCode' unless you needed a custom response explanation.
 setResponseStatus   :: Int        -- ^ HTTP response integer code
@@ -229,3 +233,36 @@ getHeader k a =
   case map snd $ List.filter ((== k) . fst) $ headers a of
     [] -> Nothing
     xs -> Just $ Char8.intercalate "," xs
+    
+-- | Sets a header key-value-pair in a 'HasHeaders' datatype. If a header with                
+-- the same name already exists, it is overwritten with the new value.
+setHeader :: (HasHeaders a) => CI ByteString -> ByteString -> a -> a
+setHeader k v = updateHeaders (((k,v):) . List.filter ((/= k) . fst))
+    
+rqPathInfo :: Request -> ByteString
+rqPathInfo = encodeUtf8 . mconcat . pathInfo
+
+-- | Modifes the 'Response' object stored in a 'Snap' monad.
+modifyResponse :: MonadSnap m => (Response -> Response) -> m ()
+modifyResponse f = liftSnap $
+   smodify $ \ss -> ss { _snapResponse = f $ _snapResponse ss }
+                    
+-- | Gets the HTTP 'Cookie' with the specified name.                    
+getCookie :: MonadSnap m
+          => ByteString
+          -> m (Maybe ByteString)
+getCookie name = withRequest $
+  return . List.lookup name . rqCookies
+  
+-- | Fetches the 'Request' from state and hands it to the given action.  
+withRequest :: MonadSnap m => (Request -> m a) -> m a
+withRequest = (getRequest >>=)
+  
+rqCookies :: Request -> Cookies
+rqCookies = maybe [] parseCookies . List.lookup hCookie . headers
+
+-- | Adds an HTTP 'Cookie' to 'Response' headers.
+addResponseCookie :: Cookie            -- ^ cookie value
+                  -> Response          -- ^ response to modify
+                  -> Response
+addResponseCookie c = setHeader hCookie $ toByteString $ renderSetCookie c
