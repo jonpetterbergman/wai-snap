@@ -5,8 +5,9 @@
 {-# language MultiParamTypeClasses #-}
 module Snap.Core where
 
-import           Blaze.ByteString.Builder     (Builder,fromByteString,toByteString)
+import           Blaze.ByteString.Builder     (Builder,fromByteString,toByteString,fromLazyByteString)
 import           Data.ByteString              (ByteString)
+import qualified Data.ByteString.Lazy       as L
 import qualified Data.ByteString.Char8      as Char8
 
 import           Control.Monad.State          (StateT,runStateT,get,modify)
@@ -179,6 +180,13 @@ setResponseBody b (ResponseBuilder s h _) = ResponseBuilder s h b
 setResponseBody b (ResponseStream s h _) = ResponseBuilder s h b
 setResponseBody b _ = ResponseBuilder (mkStatus 200 "OK") [] b
 
+getResponseBody :: Response -> Builder
+getResponseBody (ResponseBuilder _ _ b) = b
+getResponseBody _ = mempty
+
+modifyResponseBody :: (Builder -> Builder) -> Response -> Response
+modifyResponseBody f r = setResponseBody (f $ getResponseBody r) r
+
 instance HasHeaders Response where
   updateHeaders f (ResponseFile s h fi fp) = ResponseFile s (f h) fi fp
   updateHeaders f (ResponseBuilder s h b) = ResponseBuilder s (f h) b
@@ -239,6 +247,12 @@ getHeader k a =
 setHeader :: (HasHeaders a) => CI ByteString -> ByteString -> a -> a
 setHeader k v = updateHeaders (((k,v):) . List.filter ((/= k) . fst))
     
+-- | Adds a header key-value-pair to the 'HasHeaders' datatype. If a header
+-- with the same name already exists, the new value is appended to the headers
+-- list.
+addHeader :: (HasHeaders a) => CI ByteString -> ByteString -> a -> a
+addHeader k v = updateHeaders ((k,v):)
+
 rqPathInfo :: Request -> ByteString
 rqPathInfo = encodeUtf8 . mconcat . pathInfo
 
@@ -269,3 +283,17 @@ addResponseCookie :: Cookie            -- ^ cookie value
                   -> Response          -- ^ response to modify
                   -> Response
 addResponseCookie c = setHeader hCookie $ toByteString $ renderSetCookie c
+
+-- | Adds the given lazy 'L.ByteString' to the body of the 'Response' stored
+-- in the 'Snap' monad state.
+--
+-- Warning: This function is intentionally non-strict. If any pure
+-- exceptions are raised by the expression creating the 'ByteString',
+-- the exception won't actually be raised within the Snap handler.
+writeLBS :: MonadSnap m => L.ByteString -> m ()
+writeLBS s = writeBuilder $ fromLazyByteString s
+
+-- | Adds the given 'Builder' to the body of the 'Response' stored in the
+-- | 'Snap' monad state.
+writeBuilder :: MonadSnap m => Builder -> m ()
+writeBuilder b = modifyResponse $ modifyResponseBody (`mappend` b)
