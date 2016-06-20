@@ -13,7 +13,7 @@ import qualified Data.ByteString.Char8      as Char8
 import           Control.Monad.State          (StateT,runStateT,get,modify)
 import           Control.Monad.Except         (MonadError(..))
 import           Control.Monad.IO.Class       (MonadIO(..))
-import           Control.Monad                (ap,liftM,MonadPlus(..))
+import           Control.Monad                (ap,liftM,MonadPlus(..),unless)
 import           Control.Applicative          (Alternative(..))
 import           Data.CaseInsensitive         (CI)  
 import           Data.HashMap.Strict          (HashMap)   
@@ -27,14 +27,17 @@ import           Data.Int                     (Int64)
 import qualified Data.List                  as List
 import           Data.Text.Encoding           (encodeUtf8)
 
-import           Network.Wai                  (Application,FilePart)
+import           Network.Wai                  (Application,FilePart,requestMethod)
 import           Network.Wai.Internal         (Response(..),Request(..))
 import qualified Network.Wai               as  Wai
 import           Network.Socket               (SockAddr(..))
 import           Network.HTTP.Types           (hCookie,decodePathSegments,hContentType,hContentLength)
 import           Network.HTTP.Types.Status    (mkStatus) 
 import           Network.HTTP.Types.Header    (Header)
+import           Network.HTTP.Types.Method    (StdMethod(..),parseMethod)
 import           Web.Cookie                   (Cookies,parseCookies,SetCookie,renderSetCookie)
+
+type Method = Either ByteString StdMethod
 
 type Cookie = SetCookie
 
@@ -290,6 +293,11 @@ modifyResponse :: MonadSnap m => (Response -> Response) -> m ()
 modifyResponse f = liftSnap $
    smodify $ \ss -> ss { _snapResponse = f $ _snapResponse ss }
                     
+-- | Modifies the 'Request' object stored in a 'Snap' monad.                    
+modifyRequest :: MonadSnap m => (Request -> Request) -> m ()
+modifyRequest f = liftSnap $
+   smodify $ \ss -> ss { _snapRequest = f $ _snapRequest ss }
+                    
 -- | Gets the HTTP 'Cookie' with the specified name.                    
 getCookie :: MonadSnap m
           => ByteString
@@ -389,3 +397,14 @@ sendFilePartial f rng = modifyResponse go
 -- will be read using @mmap()@.
 sendFile :: (MonadSnap m) => FilePath -> m ()
 sendFile f = sendFilePartial f Nothing
+
+-- | Runs a 'Snap' monad action only if the request's HTTP method matches
+-- the given method.
+method :: MonadSnap m => Method -> m a -> m a
+method m action = do
+      req <- getRequest
+      unless (rqMethod req == m) pass
+      action
+      
+rqMethod :: Request -> Method
+rqMethod = parseMethod . requestMethod      
