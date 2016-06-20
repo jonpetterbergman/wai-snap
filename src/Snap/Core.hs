@@ -13,7 +13,7 @@ import qualified Data.ByteString.Char8      as Char8
 import           Control.Monad.State          (StateT,runStateT,get,modify)
 import           Control.Monad.Except         (MonadError(..))
 import           Control.Monad.IO.Class       (MonadIO(..))
-import           Control.Monad                (ap,liftM,MonadPlus(..),unless)
+import           Control.Monad                (ap,liftM,MonadPlus(..),unless,join)
 import           Control.Applicative          (Alternative(..))
 import           Data.CaseInsensitive         (CI)  
 import           Data.HashMap.Strict          (HashMap)   
@@ -31,7 +31,11 @@ import           Network.Wai                  (Application,FilePart,requestMetho
 import           Network.Wai.Internal         (Response(..),Request(..))
 import qualified Network.Wai               as  Wai
 import           Network.Socket               (SockAddr(..))
-import           Network.HTTP.Types           (hCookie,decodePathSegments,hContentType,hContentLength)
+import           Network.HTTP.Types           (hCookie,
+                                               decodePathSegments,
+                                               hContentType,
+                                               hContentLength,
+                                               Query)
 import           Network.HTTP.Types.Status    (mkStatus) 
 import           Network.HTTP.Types.Header    (Header)
 import           Network.HTTP.Types.Method    (StdMethod(..),parseMethod)
@@ -298,6 +302,39 @@ modifyRequest :: MonadSnap m => (Request -> Request) -> m ()
 modifyRequest f = liftSnap $
    smodify $ \ss -> ss { _snapRequest = f $ _snapRequest ss }
                     
+-- | See 'rqParam'. Looks up a value for the given named parameter in the                    
+-- 'Request'. If more than one value was entered for the given parameter name,
+-- 'getParam' gloms the values together with:
+--
+-- @    'S.intercalate' \" \"@
+--
+getParam :: MonadSnap m
+         => ByteString          -- ^ parameter name to look up
+         -> m (Maybe ByteString)
+getParam = getParamFrom rqParam
+                    
+getParamFrom :: MonadSnap m =>           
+                (ByteString -> Request -> Maybe ByteString)
+             -> ByteString
+             -> m (Maybe ByteString)
+getParamFrom f k = do
+    rq <- getRequest
+    return $! f k rq
+           
+type Params = Query      
+
+rqParams :: Request -> Params
+rqParams = queryString
+
+-- | Looks up the value(s) for the given named parameter. Parameters initially
+    -- come from the request's query string and any decoded POST body (if the
+    -- request's @Content-Type@ is @application\/x-www-form-urlencoded@).
+    -- Parameter values can be modified within handlers using "rqModifyParams".
+rqParam :: ByteString           -- ^ parameter name to look up
+        -> Request              -- ^ HTTP request
+        -> Maybe ByteString
+rqParam k rq = join $ List.lookup k $ rqParams rq
+
 -- | Gets the HTTP 'Cookie' with the specified name.                    
 getCookie :: MonadSnap m
           => ByteString
