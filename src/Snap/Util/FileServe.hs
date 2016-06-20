@@ -1,26 +1,71 @@
 {-# language OverloadedStrings #-}
+{-# language ScopedTypeVariables #-}
 module Snap.Util.FileServe where
 
-import           Snap.Core                      (modifyResponse,
-                                                 MonadSnap,
-                                                 setHeader,
-                                                 emptyResponse,
-                                                 setResponseCode,
-                                                 setContentType,
-                                                 liftSnap,
-                                                 getRequest,
-                                                 getHeader,
-                                                 deleteHeader,
-                                                 setContentLength)
-import           Network.Wai                    (responseFile)
-import           Data.ByteString                (ByteString)
-import           Network.HTTP.Types.Status      (mkStatus)
-import           Snap.Internal.Http.Server.Date (parseHttpTime,
-                                                 formatHttpTime)
-import           Control.Monad                  (liftM)
-import           Control.Monad.Trans            (liftIO)
-import           Data.Maybe                     (isNothing)
+import           Blaze.ByteString.Builder         (toByteString,
+                                                   fromByteString,
+                                                   fromWord8)
+import           Blaze.ByteString.Builder.Char8   (fromShow)  
+import           Snap.Core                        (modifyResponse,
+                                                   MonadSnap,
+                                                   setHeader,
+                                                   emptyResponse,
+                                                   setResponseCode,
+                                                   setContentType,
+                                                   liftSnap,
+                                                   getRequest,
+                                                   getHeader,
+                                                   deleteHeader,
+                                                   setContentLength,
+                                                   setResponseBody,
+                                                   finishWith,
+                                                   sendFilePartial,
+                                                   sendFile)
+import           Network.Wai                      (Request,
+                                                   FilePart(..))
+import           Data.ByteString                  (ByteString)
+import           Data.ByteString.Internal         (c2w)
+import           Data.Int                         (Int64)
+import           Network.HTTP.Types.Status        (mkStatus)
+import           Snap.Internal.Http.Server.Date   (parseHttpTime,
+                                                   formatHttpTime)
+import           Control.Monad                    (liftM,unless,when)
+import           Control.Monad.Trans              (liftIO,MonadIO)
+import           Data.Maybe                       (isNothing,fromMaybe)
+import           Data.HashMap.Strict              (HashMap)
+import qualified Data.HashMap.Strict            as Map
+import           System.FilePath                  (takeExtensions,
+                                                   takeFileName)
+import           System.PosixCompat.Files         (getFileStatus,
+                                                   modificationTime,
+                                                   fileSize)  
+import           Snap.Internal.Debug              (debug)  
+import           Data.Attoparsec.ByteString.Char8 (Parser,
+                                                   char,
+                                                   endOfInput,
+                                                   option,
+                                                   string)
+import           Snap.Internal.Parsing            (parseNum,
+                                                   fullyParse)
+import           Control.Applicative              ((<|>))
 
+dbg :: (MonadIO m) => String -> m ()
+dbg s = debug $ "FileServe:" ++ s
+
+lookupExt :: a -> HashMap FilePath a -> FilePath -> a
+lookupExt def m f =
+      if null ext
+        then def
+        else fromMaybe (lookupExt def m (drop 1 ext)) mbe
+  where
+    ext             = takeExtensions f
+    mbe             = Map.lookup ext m
+
+-- | A type alias for MIME type
+type MimeMap = HashMap FilePath ByteString
+
+fileType :: MimeMap -> FilePath -> ByteString
+fileType = lookupExt defaultMimeType
 
 -- | Serves a single file specified by a full or relative path.  If the file
 -- does not exist, throws an exception (not that it does /not/ pass to the
@@ -36,7 +81,7 @@ serveFileAs :: MonadSnap m
             => ByteString        -- ^ MIME type
             -> FilePath          -- ^ path to file
             -> m ()
-            serveFileAs mime fp = do
+serveFileAs mime fp = do
     reqOrig <- getRequest
 
     -- If-Range header must be ignored if there is no Range: header in the
@@ -104,3 +149,168 @@ serveFileAs :: MonadSnap m
     notModified = finishWith $
                   setResponseCode 304 emptyResponse
 
+
+defaultMimeTypes :: MimeMap
+defaultMimeTypes = Map.fromList [
+  ( ".asc"     , "text/plain"                        ),
+  ( ".asf"     , "video/x-ms-asf"                    ),
+  ( ".asx"     , "video/x-ms-asf"                    ),
+  ( ".avi"     , "video/x-msvideo"                   ),
+  ( ".bz2"     , "application/x-bzip"                ),
+  ( ".c"       , "text/plain"                        ),
+  ( ".class"   , "application/octet-stream"          ),
+  ( ".conf"    , "text/plain"                        ),
+  ( ".cpp"     , "text/plain"                        ),
+  ( ".css"     , "text/css"                          ),
+  ( ".cxx"     , "text/plain"                        ),
+  ( ".dtd"     , "text/xml"                          ),
+  ( ".dvi"     , "application/x-dvi"                 ),
+  ( ".gif"     , "image/gif"                         ),
+  ( ".gz"      , "application/x-gzip"                ),
+  ( ".hs"      , "text/plain"                        ),
+  ( ".htm"     , "text/html"                         ),
+  ( ".html"    , "text/html"                         ),
+  ( ".ico"     , "image/x-icon"                      ),
+  ( ".jar"     , "application/x-java-archive"        ),
+  ( ".jpeg"    , "image/jpeg"                        ),
+  ( ".jpg"     , "image/jpeg"                        ),
+  ( ".js"      , "text/javascript"                   ),
+  ( ".json"    , "application/json"                  ),
+  ( ".log"     , "text/plain"                        ),
+  ( ".m3u"     , "audio/x-mpegurl"                   ),
+  ( ".mov"     , "video/quicktime"                   ),
+  ( ".mp3"     , "audio/mpeg"                        ),
+  ( ".mpeg"    , "video/mpeg"                        ),
+  ( ".mpg"     , "video/mpeg"                        ),
+  ( ".ogg"     , "application/ogg"                   ),
+  ( ".pac"     , "application/x-ns-proxy-autoconfig" ),
+  ( ".pdf"     , "application/pdf"                   ),
+  ( ".png"     , "image/png"                         ),
+  ( ".ps"      , "application/postscript"            ),
+  ( ".qt"      , "video/quicktime"                   ),
+  ( ".sig"     , "application/pgp-signature"         ),
+  ( ".spl"     , "application/futuresplash"          ),
+  ( ".svg"     , "image/svg+xml"                     ),
+  ( ".swf"     , "application/x-shockwave-flash"     ),
+  ( ".tar"     , "application/x-tar"                 ),
+  ( ".tar.bz2" , "application/x-bzip-compressed-tar" ),
+  ( ".tar.gz"  , "application/x-tgz"                 ),
+  ( ".tbz"     , "application/x-bzip-compressed-tar" ),
+  ( ".text"    , "text/plain"                        ),
+  ( ".tgz"     , "application/x-tgz"                 ),
+  ( ".torrent" , "application/x-bittorrent"          ),
+  ( ".ttf"     , "application/x-font-truetype"       ),
+  ( ".txt"     , "text/plain"                        ),
+  ( ".wav"     , "audio/x-wav"                       ),
+  ( ".wax"     , "audio/x-ms-wax"                    ),
+  ( ".wma"     , "audio/x-ms-wma"                    ),
+  ( ".wmv"     , "video/x-ms-wmv"                    ),
+  ( ".xbm"     , "image/x-xbitmap"                   ),
+  ( ".xml"     , "text/xml"                          ),
+  ( ".xpm"     , "image/x-xpixmap"                   ),
+  ( ".xwd"     , "image/x-xwindowdump"               ),
+  ( ".zip"     , "application/zip"                   ) ]
+                   
+defaultMimeType :: ByteString                   
+defaultMimeType = "application/octet-stream"
+
+------------------------------------------------------------------------------
+checkRangeReq :: (MonadSnap m) => Request -> FilePath -> Int64 -> m Bool
+checkRangeReq req fp sz = do
+    -- TODO/FIXME: multiple ranges
+    dbg $ "checkRangeReq, fp=" ++ fp ++ ", sz=" ++ Prelude.show sz
+    maybe (return False)
+          (\s -> either (const $ return False)
+                        withRange
+                        (fullyParse s rangeParser))
+          (getHeader "range" req)
+
+  where
+    withRange rng@(RangeReq start mend) = do
+        dbg $ "withRange: got Range request: " ++ Prelude.show rng
+        let end = fromMaybe (sz-1) mend
+        dbg $ "withRange: start=" ++ Prelude.show start
+                  ++ ", end=" ++ Prelude.show end
+
+        if start < 0 || end < start || start >= sz || end >= sz
+           then send416
+           else send206 start end
+
+    withRange rng@(SuffixRangeReq nbytes) = do
+        dbg $ "withRange: got Range request: " ++ Prelude.show rng
+        let end   = sz-1
+        let start = sz - nbytes
+
+        dbg $ "withRange: start=" ++ Prelude.show start
+                  ++ ", end=" ++ Prelude.show end
+
+        if start < 0 || end < start || start >= sz || end >= sz
+           then send416
+           else send206 start end
+
+    -- note: start and end INCLUSIVE here
+    send206 start end = do
+        dbg "inside send206"
+        let len = end-start+1
+        let crng = toByteString $
+                   mconcat [ fromByteString "bytes "
+                           , fromShow start
+                           , fromWord8 (c2w '-')
+                           , fromShow end
+                           , fromWord8 (c2w '/')
+                           , fromShow sz ]
+
+        modifyResponse $ setResponseCode 206
+                       . setHeader "Content-Range" crng
+                       . setContentLength len
+
+        dbg $ "send206: sending range (" ++ Prelude.show start
+                ++ "," ++ Prelude.show (end+1) ++ ") to sendFilePartial"
+
+        -- end here was inclusive, sendFilePartial is exclusive
+        sendFilePartial fp $ Just $ FilePart (toInteger start) (toInteger len) (toInteger sz)
+        return True
+
+
+    send416 = do
+        dbg "inside send416"
+        -- if there's an "If-Range" header in the request, then we just send
+        -- back 200
+        if getHeader "If-Range" req /= Nothing
+           then return False
+           else do
+               let crng = toByteString $
+                          mconcat [ fromByteString "bytes */"
+                                  , fromShow sz ]
+
+               modifyResponse $ setResponseCode 416
+                              . setHeader "Content-Range" crng
+                              . setContentLength 0
+                              . deleteHeader "Content-Type"
+                              . deleteHeader "Content-Encoding"
+                              . deleteHeader "Transfer-Encoding"
+                              . setResponseBody mempty
+
+               return True
+               
+------------------------------------------------------------------------------               
+data RangeReq = RangeReq { _rangeFirst :: !Int64
+                         , _rangeLast  :: !(Maybe Int64)
+                         }
+              | SuffixRangeReq { _suffixLength :: !Int64 }
+              deriving (Eq, Prelude.Show)
+
+------------------------------------------------------------------------------
+rangeParser :: Parser RangeReq
+rangeParser = string "bytes=" *>
+              (byteRangeSpec <|> suffixByteRangeSpec) <*
+              endOfInput
+  where
+    byteRangeSpec = do
+        start <- parseNum
+        char '-'
+        end   <- option Nothing $ liftM Just parseNum
+
+        return $! RangeReq start end
+
+    suffixByteRangeSpec = liftM SuffixRangeReq $ char '-' *> parseNum

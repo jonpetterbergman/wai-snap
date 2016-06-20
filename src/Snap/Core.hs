@@ -27,7 +27,7 @@ import           Data.Int                     (Int64)
 import qualified Data.List                  as List
 import           Data.Text.Encoding           (encodeUtf8)
 
-import           Network.Wai                  (Application)
+import           Network.Wai                  (Application,FilePart)
 import           Network.Wai.Internal         (Response(..),Request(..))
 import qualified Network.Wai               as  Wai
 import           Network.Socket               (SockAddr(..))
@@ -43,6 +43,11 @@ type Cookie = SetCookie
 -- handler.
 pass :: MonadSnap m => m a
 pass = empty
+
+-- | Short-circuits a 'Snap' monad action early, storing the given
+-- 'Response' value in its state.
+finishWith :: MonadSnap m => Response -> m a
+finishWith = liftSnap . Snap . return . EarlyTermination
 
 type Headers = [Header]
 
@@ -264,6 +269,10 @@ getHeader k a =
 setHeader :: (HasHeaders a) => CI ByteString -> ByteString -> a -> a
 setHeader k v = updateHeaders (((k,v):) . List.filter ((/= k) . fst))
     
+-- | Clears a header value from a 'HasHeaders' datatype.
+deleteHeader :: (HasHeaders a) => CI ByteString -> a -> a
+deleteHeader k = updateHeaders $ List.filter ((/= k) . fst)
+
 -- | Adds a header key-value-pair to the 'HasHeaders' datatype. If a header
 -- with the same name already exists, the new value is appended to the headers
 -- list.
@@ -358,3 +367,25 @@ statusReasonMap = IM.fromList [
   (504, "Gateway Time-out"),
   (505, "HTTP Version not supported")
   ]
+                  
+-- | Sets the output to be the contents of the specified file, within the                  
+-- given (start,end) range.
+--
+-- Calling 'sendFilePartial' will overwrite any output queued to be sent in
+-- the 'Response'. If the response body is not modified after the call to
+-- 'sendFilePartial', Snap will use the efficient @sendfile()@ system call on
+-- platforms that support it.
+--
+-- If the response body is modified (using 'modifyResponseBody'), the file
+-- will be read using @mmap()@.
+sendFilePartial :: (MonadSnap m) => FilePath -> (Maybe FilePart) -> m ()
+sendFilePartial f rng = modifyResponse go 
+  where go (ResponseFile s h _ _) = ResponseFile s h f rng
+        go (ResponseBuilder s h _) = ResponseFile s h f rng
+        go (ResponseStream s h _) = ResponseFile s h f rng
+        go _ = ResponseFile (mkStatus 200 "OK") mempty f rng
+                        
+-- If the response body is modified (using 'modifyResponseBody'), the file
+-- will be read using @mmap()@.
+sendFile :: (MonadSnap m) => FilePath -> m ()
+sendFile f = sendFilePartial f Nothing
