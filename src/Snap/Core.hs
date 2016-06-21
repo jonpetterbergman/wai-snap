@@ -5,15 +5,29 @@
 {-# language MultiParamTypeClasses #-}
 module Snap.Core where
 
-import           Blaze.ByteString.Builder     (Builder,fromByteString,toByteString,fromLazyByteString)
+import           Blaze.ByteString.Builder     (Builder,
+                                               fromByteString,
+                                               toByteString,
+                                               fromLazyByteString)
+import           Blaze.ByteString.Builder.Char.Utf8(fromLazyText)
 import           Data.ByteString              (ByteString)
 import qualified Data.ByteString.Lazy       as L
 import qualified Data.ByteString.Char8      as Char8
 
-import           Control.Monad.State          (StateT,runStateT,get,modify)
+import           Control.Monad.Cont           (ContT(..))
+import           Control.Monad.Except         (ExceptT(..),Except(..))
+import           Control.Monad.Reader         (ReaderT(..))
+import           Control.Monad.Writer.Strict  (WriterT(..))
+import           Control.Monad.State.Strict   (StateT,runStateT,get,modify)
 import           Control.Monad.Except         (MonadError(..))
 import           Control.Monad.IO.Class       (MonadIO(..))
+import           Control.Monad.List           (ListT(..))
+import           Control.Monad.RWS.Strict    hiding (pass)
+import qualified Control.Monad.RWS.Lazy     as LRWS
+import qualified Control.Monad.State.Lazy   as LState
+import qualified Control.Monad.Writer.Lazy  as LWriter
 import           Control.Monad                (ap,liftM,MonadPlus(..),unless,join)
+import           Control.Monad.Trans          (lift)
 import           Control.Applicative          (Alternative(..))
 import           Data.CaseInsensitive         (CI)  
 import           Data.HashMap.Strict          (HashMap)   
@@ -25,6 +39,7 @@ import           Data.Maybe                   (listToMaybe,fromMaybe)
 import           Data.Time                    (UTCTime)
 import           Data.Int                     (Int64)
 import qualified Data.List                  as List
+import qualified Data.Text.Lazy             as LT
 import           Data.Text.Encoding           (encodeUtf8)
 
 import           Network.Wai                  (Application,FilePart,requestMethod)
@@ -33,6 +48,7 @@ import qualified Network.Wai               as  Wai
 import           Network.Socket               (SockAddr(..))
 import           Network.HTTP.Types           (hCookie,
                                                decodePathSegments,
+                                               encodePathSegments,
                                                hContentType,
                                                hContentLength,
                                                Query)
@@ -80,6 +96,45 @@ class (Monad m, MonadIO m, MonadPlus m, Functor m,
        Applicative m, Alternative m) => MonadSnap m where
   liftSnap :: Snap a -> m a
                  
+instance MonadPlus m => MonadPlus (ContT c m) where
+    mzero = lift mzero
+    m `mplus` n = ContT $ \ f -> runContT m f `mplus` runContT n f
+
+instance MonadPlus m => Alternative (ContT c m) where
+    empty = mzero
+    (<|>) = mplus
+
+instance MonadSnap m => MonadSnap (ContT c m) where
+    liftSnap = lift . liftSnap
+
+instance (MonadSnap m,Monoid e) => MonadSnap (ExceptT e m) where
+    liftSnap = lift . liftSnap
+
+instance MonadSnap m => MonadSnap (ListT m) where
+    liftSnap = lift . liftSnap
+
+instance (MonadSnap m, Monoid w) => MonadSnap (RWST r w s m) where
+    liftSnap = lift . liftSnap
+
+instance (MonadSnap m, Monoid w) => MonadSnap (LRWS.RWST r w s m) where
+    liftSnap = lift . liftSnap
+
+instance MonadSnap m => MonadSnap (ReaderT r m) where
+    liftSnap = lift . liftSnap
+
+instance MonadSnap m => MonadSnap (StateT s m) where
+    liftSnap = lift . liftSnap
+
+instance MonadSnap m => MonadSnap (LState.StateT s m) where
+    liftSnap = lift . liftSnap
+
+instance (MonadSnap m, Monoid w) => MonadSnap (WriterT w m) where
+    liftSnap = lift . liftSnap
+
+instance (MonadSnap m, Monoid w) => MonadSnap (LWriter.WriterT w m) where
+    liftSnap = lift . liftSnap
+              
+              
 data SnapResult a = SnapValue a
                   | PassOnProcessing String
                   | EarlyTermination Response
@@ -245,6 +300,11 @@ dummyLog = Char8.putStrLn
 getRequest :: MonadSnap m => m Request
 getRequest = liftSnap $ liftM _snapRequest sget
 
+getResponse :: MonadSnap m => m Response
+getResponse = liftSnap $ liftM _snapResponse sget
+
+rqServerName :: Request -> Maybe ByteString
+rqServerName = requestHeaderHost
 
 -- | Grabs something out of the 'Request' object, using the given projection
 -- function. See 'gets'.
@@ -287,7 +347,7 @@ addHeader :: (HasHeaders a) => CI ByteString -> ByteString -> a -> a
 addHeader k v = updateHeaders ((k,v):)
 
 rqPathInfo :: Request -> ByteString
-rqPathInfo = encodeUtf8 . mconcat . pathInfo
+rqPathInfo = toByteString . encodePathSegments . pathInfo
 
 setRqPathInfo :: ByteString -> Request -> Request
 setRqPathInfo b r = r { pathInfo = decodePathSegments b }
@@ -363,6 +423,18 @@ addResponseCookie c = setHeader hCookie $ toByteString $ renderSetCookie c
 -- the exception won't actually be raised within the Snap handler.
 writeLBS :: MonadSnap m => L.ByteString -> m ()
 writeLBS s = writeBuilder $ fromLazyByteString s
+
+writeBS :: MonadSnap m => ByteString -> m ()
+writeBS s = writeBuilder $ fromByteString s
+
+-- | Adds the given lazy 'LT.Text' to the body of the 'Response' stored in the
+-- 'Snap' monad state.
+--
+-- Warning: This function is intentionally non-strict. If any pure
+-- exceptions are raised by the expression creating the 'ByteString',
+-- the exception won't actually be raised within the Snap handler.
+writeLazyText :: MonadSnap m => LT.Text -> m ()
+writeLazyText s = writeBuilder $ fromLazyText s
 
 -- | Adds the given 'Builder' to the body of the 'Response' stored in the
 -- | 'Snap' monad state.
@@ -445,3 +517,29 @@ method m action = do
       
 rqMethod :: Request -> Method
 rqMethod = parseMethod . requestMethod      
+
+rqContextPath :: Request -> ByteString
+rqContextPath r = 
+  toByteString $ encodePathSegments $ reverse $ drop (length $ pathInfo r) $ reverse $ decodePathSegments $ rawPathInfo r
+  
+-- | Performs a redirect by setting the @Location@ header to the given target  
+-- URL/path and the status code to 302 in the 'Response' object stored in a
+-- 'Snap' monad. Note that the target URL is not validated in any way.
+-- Consider using 'redirect\'' instead, which allows you to choose the correct
+-- status code.
+redirect :: MonadSnap m => ByteString -> m a
+redirect target = redirect' target 302
+
+-- | Performs a redirect by setting the @Location@ header to the given target
+-- URL/path and the status code (should be one of 301, 302, 303 or 307) in the
+-- 'Response' object stored in a 'Snap' monad. Note that the target URL is not
+-- validated in any way.
+redirect' :: MonadSnap m => ByteString -> Int -> m a
+redirect' target status = do
+      r <- getResponse
+      
+      finishWith
+        $ setResponseCode status
+        $ setContentLength 0
+        $ modifyResponseBody (const mempty)
+        $ setHeader "Location" target r
