@@ -36,10 +36,11 @@ import           Data.Map                     (Map)
 import qualified Data.Map                   as Map
 import qualified Data.IntMap                as IM
 import           Data.Maybe                   (listToMaybe,fromMaybe)
-import           Data.Time                    (UTCTime)
+import           Data.Time                    (UTCTime(..),Day(..))
 import           Data.Int                     (Int64)
 import qualified Data.List                  as List
 import qualified Data.Text.Lazy             as LT
+import           Data.Default                 (def)
 import           Data.Text.Encoding           (encodeUtf8)
 
 import           Network.Wai                  (Application,FilePart,requestMethod)
@@ -55,7 +56,7 @@ import           Network.HTTP.Types           (hCookie,
 import           Network.HTTP.Types.Status    (mkStatus) 
 import           Network.HTTP.Types.Header    (Header)
 import           Network.HTTP.Types.Method    (StdMethod(..),parseMethod)
-import           Web.Cookie                   (Cookies,parseCookies,SetCookie,renderSetCookie)
+import           Web.Cookie                   (Cookies,parseCookies,SetCookie(..),renderSetCookie)
 
 type Method = Either ByteString StdMethod
 
@@ -144,6 +145,7 @@ data SnapState = SnapState
   , _snapResponse :: Response
   , _snapLogError :: ByteString -> IO ()
   , _snapModifyTimeout :: (Int -> Int) -> IO ()
+  , _snapPort :: Int
   }
   
 instance Applicative Snap where
@@ -204,7 +206,7 @@ snapFail !m = Snap $! return $! PassOnProcessing m
 
 snapToWai :: Snap a -> Int -> Application  
 snapToWai (Snap m) serverPort req aCont = do
-    (r,ss') <- runStateT m $ SnapState req dresp dummyLog (const $ return ())
+    (r,ss') <- runStateT m $ SnapState req dresp dummyLog (const $ return ()) serverPort
     let resp = case r of
                  SnapValue _ -> _snapResponse ss'
                  PassOnProcessing _ -> fourohfour req
@@ -302,6 +304,9 @@ getRequest = liftSnap $ liftM _snapRequest sget
 
 getResponse :: MonadSnap m => m Response
 getResponse = liftSnap $ liftM _snapResponse sget
+
+getServerPort :: MonadSnap m => m Int
+getServerPort = liftSnap $ liftM _snapPort sget
 
 rqServerName :: Request -> Maybe ByteString
 rqServerName = requestHeaderHost
@@ -414,6 +419,18 @@ addResponseCookie :: Cookie            -- ^ cookie value
                   -> Response          -- ^ response to modify
                   -> Response
 addResponseCookie c = setHeader hCookie $ toByteString $ renderSetCookie c
+
+-- | Expire the given 'Cookie' in client's browser.
+expireCookie :: (MonadSnap m)
+             => ByteString
+             -- ^ Cookie name
+             -> Maybe ByteString
+             -- ^ Cookie domain
+             -> m ()
+expireCookie nm dm = do
+  let old = UTCTime (ModifiedJulianDay 0) 0
+  modifyResponse $ addResponseCookie
+                 $ def { setCookieName = nm, setCookieDomain = dm, setCookieExpires = Just old }
 
 -- | Adds the given lazy 'L.ByteString' to the body of the 'Response' stored
 -- in the 'Snap' monad state.
@@ -543,3 +560,5 @@ redirect' target status = do
         $ setContentLength 0
         $ modifyResponseBody (const mempty)
         $ setHeader "Location" target r
+        
+        
