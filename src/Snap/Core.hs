@@ -3,6 +3,7 @@
 {-# language TypeSynonymInstances #-}
 {-# language FlexibleInstances #-}
 {-# language MultiParamTypeClasses #-}
+{-# language TypeFamilies #-}
 module Snap.Core where
 
 import           Blaze.ByteString.Builder     (Builder,
@@ -18,7 +19,7 @@ import           Control.Monad.Cont           (ContT(..))
 import           Control.Monad.Except         (ExceptT(..),Except(..))
 import           Control.Monad.Reader         (ReaderT(..))
 import           Control.Monad.Writer.Strict  (WriterT(..))
-import           Control.Monad.State.Strict   (StateT,runStateT,get,modify)
+import           Control.Monad.State.Strict   (StateT,runStateT,get,modify,execStateT)
 import           Control.Monad.Except         (MonadError(..))
 import           Control.Monad.IO.Class       (MonadIO(..))
 import           Control.Monad.List           (ListT(..))
@@ -28,6 +29,8 @@ import qualified Control.Monad.State.Lazy   as LState
 import qualified Control.Monad.Writer.Lazy  as LWriter
 import           Control.Monad                (ap,liftM,MonadPlus(..),unless,join)
 import           Control.Monad.Trans          (lift)
+import           Control.Monad.Trans.Control  (MonadBaseControl(..))
+import           Control.Monad.Base           (MonadBase(..))
 import           Control.Applicative          (Alternative(..))
 import           Data.CaseInsensitive         (CI)  
 import           Data.HashMap.Strict          (HashMap)   
@@ -89,7 +92,7 @@ instance HasHeaders Request where
 
 newtype Snap a = Snap {
   unSnap :: StateT SnapState IO (SnapResult a)
-  }
+  } 
                  
 -- | 'MonadSnap' is a type class, analogous to 'MonadIO' for 'IO', that makes                 
 -- it easy to wrap 'Snap' inside monad transformers.
@@ -135,6 +138,14 @@ instance (MonadSnap m, Monoid w) => MonadSnap (WriterT w m) where
 instance (MonadSnap m, Monoid w) => MonadSnap (LWriter.WriterT w m) where
     liftSnap = lift . liftSnap
               
+instance MonadBase IO Snap where
+  liftBase act = liftIO act             
+  
+instance MonadBaseControl IO Snap where 
+  type StM Snap a = (SnapResult a,SnapState)
+  liftBaseWith f = do s <- sget
+                      liftIO $ f (flip runStateT s . unSnap)
+  restoreM (x,s) = Snap $ (put s >> return x)    
               
 data SnapResult a = SnapValue a
                   | PassOnProcessing String
