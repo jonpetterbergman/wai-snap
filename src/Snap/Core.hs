@@ -4,6 +4,8 @@
 {-# language FlexibleInstances #-}
 {-# language MultiParamTypeClasses #-}
 {-# language TypeFamilies #-}
+{-# language ScopedTypeVariables#-}
+{-# language RankNTypes #-}
 module Snap.Core where
 
 import           Blaze.ByteString.Builder     (Builder,
@@ -29,7 +31,11 @@ import qualified Control.Monad.State.Lazy   as LState
 import qualified Control.Monad.Writer.Lazy  as LWriter
 import           Control.Monad                (ap,liftM,MonadPlus(..),unless,join)
 import           Control.Monad.Trans          (lift)
-import           Control.Monad.Trans.Control  (MonadBaseControl(..))
+import           Control.Monad.Trans.Control  (MonadBaseControl(..),
+                                               MonadTransControl(..),
+                                               defaultLiftWith,
+                                               defaultRestoreT,
+                                               RunInBase)
 import           Control.Monad.Base           (MonadBase(..))
 import           Control.Applicative          (Alternative(..))
 import           Data.CaseInsensitive         (CI)  
@@ -139,13 +145,25 @@ instance (MonadSnap m, Monoid w) => MonadSnap (LWriter.WriterT w m) where
     liftSnap = lift . liftSnap
               
 instance MonadBase IO Snap where
-  liftBase act = liftIO act             
+  liftBase act = liftIO $ liftBase act             
   
-instance MonadBaseControl IO Snap where 
+instance MonadBaseControl IO Snap where  
   type StM Snap a = (SnapResult a,SnapState)
-  liftBaseWith f = do s <- sget
-                      liftIO $ f (flip runStateT s . unSnap)
-  restoreM (x,s) = Snap $ (put s >> return x)    
+  liftBaseWith f = 
+    Snap $ fmap SnapValue $ liftBaseWith $ \rib -> f (rib . unSnap)
+  restoreM = Snap . restoreM
+  
+--instance MonadBaseControl IO Snap where  
+--  type StM Snap a = (a,SnapState)
+--  liftBaseWith f = 
+--    Snap $ fmap SnapValue $ liftBaseWith $ \rib -> f ((\x -> rib x >>= \(SnapValue x,y) -> return (x,y)) . unSnap)
+--  restoreM (x,s) = Snap $ restoreM (SnapValue x,s)
+          
+--instance MonadBaseControl IO Snap where 
+--  type StM Snap a = (SnapResult a,SnapState)
+--  liftBaseWith f = do s <- sget
+--                      liftIO $ f (flip runStateT s . unSnap)
+--  restoreM (x,s) = Snap $ (put s >> return x)    
               
 data SnapResult a = SnapValue a
                   | PassOnProcessing String
