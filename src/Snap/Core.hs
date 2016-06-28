@@ -590,4 +590,46 @@ redirect' target status = do
         $ modifyResponseBody (const mempty)
         $ setHeader "Location" target r
         
-        
+-- | Runs a 'Snap' monad action only for requests where 'rqPathInfo' is        
+-- exactly equal to the given string. If the path matches, locally sets
+-- 'rqContextPath' to the old value of 'rqPathInfo', sets 'rqPathInfo'=\"\",
+-- and runs the given handler.
+path :: MonadSnap m
+     => ByteString  -- ^ path to match against
+     -> m a         -- ^ handler to run
+     -> m a
+path = pathWith (==)
+
+-- Runs a 'Snap' monad action only if the 'rqPathInfo' matches the given
+-- predicate.
+pathWith :: MonadSnap m
+         => (ByteString -> ByteString -> Bool)
+         -> ByteString
+         -> m a
+         -> m a
+pathWith c p action = do
+  req <- getRequest
+  unless (c p (rqPathInfo req)) pass
+  localRequest (updateContextPath $ Char8.length p) action
+  
+-- | Runs a 'Snap' action with a locally-modified 'Request' state  
+-- object. The 'Request' object in the Snap monad state after the call
+-- to localRequest will be unchanged.
+localRequest :: MonadSnap m => (Request -> Request) -> m a -> m a
+localRequest f m = do
+    req <- getRequest
+    runAct req <|> (putRequest req >> pass)
+  where
+    runAct req = do
+      modifyRequest f
+      result <- m
+      putRequest req
+      return result
+      
+-- Appends n bytes of the path info to the context path with a      
+-- trailing slash.
+updateContextPath :: Int -> Request -> Request
+updateContextPath n req | n > 0     = setRqPathInfo pinfo req
+                        | otherwise = req
+  where
+    pinfo = Char8.drop (n+1) (rqPathInfo req)
