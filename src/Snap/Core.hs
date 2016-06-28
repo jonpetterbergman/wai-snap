@@ -561,6 +561,23 @@ sendFilePartial f rng = modifyResponse go
 sendFile :: (MonadSnap m) => FilePath -> m ()
 sendFile f = sendFilePartial f Nothing
 
+-- | Runs a 'Snap' monad action only when the 'rqPathInfo' of the request
+-- starts with the given path. For example,
+--
+-- > dir "foo" handler
+--
+-- Will fail if 'rqPathInfo' is not \"@\/foo@\" or \"@\/foo\/...@\", and will
+-- add @\"foo\/\"@ to the handler's local 'rqContextPath'.
+dir :: MonadSnap m
+    => ByteString  -- ^ path component to match
+    -> m a         -- ^ handler to run
+    -> m a
+dir = pathWith f
+  where
+    f dr pinfo = dr == x
+      where
+        (x,_) = Char8.break (=='/') pinfo
+
 -- | Runs a 'Snap' monad action only if the request's HTTP method matches
 -- the given method.
 method :: MonadSnap m => Method -> m a -> m a
