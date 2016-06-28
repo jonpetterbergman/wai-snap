@@ -14,8 +14,11 @@ import           Blaze.ByteString.Builder     (Builder,
                                                fromLazyByteString)
 import           Blaze.ByteString.Builder.Char.Utf8(fromLazyText)
 import           Data.ByteString              (ByteString)
+import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy       as L
 import qualified Data.ByteString.Char8      as Char8
+import           Data.ByteString.Internal     (c2w)
+import qualified Data.HashMap.Strict as H
 
 import           Control.Monad.Cont           (ContT(..))
 import           Control.Monad.Except         (ExceptT(..),Except(..))
@@ -51,6 +54,7 @@ import qualified Data.List                  as List
 import qualified Data.Text.Lazy             as LT
 import           Data.Default                 (def)
 import           Data.Text.Encoding           (encodeUtf8)
+import           Data.Function                (on)
 
 import           Network.Wai                  (Application,FilePart,requestMethod)
 import           Network.Wai.Internal         (Response(..),Request(..))
@@ -66,6 +70,7 @@ import           Network.HTTP.Types.Status    (mkStatus)
 import           Network.HTTP.Types.Header    (Header)
 import           Network.HTTP.Types.Method    (StdMethod(..),parseMethod)
 import           Web.Cookie                   (Cookies,parseCookies,SetCookie(..),renderSetCookie)
+import           Snap.Internal.Parsing        (urlDecode)
 
 type Method = Either ByteString StdMethod
 
@@ -420,6 +425,9 @@ type Params = Query
 rqParams :: Request -> Params
 rqParams = queryString
 
+setRqParams :: Params -> Request -> Request
+setRqParams p req = req { queryString = p }
+
 -- | Looks up the value(s) for the given named parameter. Parameters initially
     -- come from the request's query string and any decoded POST body (if the
     -- request's @Content-Type@ is @application\/x-www-form-urlencoded@).
@@ -633,3 +641,130 @@ updateContextPath n req | n > 0     = setRqPathInfo pinfo req
                         | otherwise = req
   where
     pinfo = Char8.drop (n+1) (rqPathInfo req)
+    
+-- | route    
+route :: MonadSnap m => [(ByteString, m a)] -> m a    
+route rts = do
+    p <- getsRequest rqPathInfo
+    route' (return ()) [] (splitPath p) [] rts'
+  where
+    rts' = mconcat (map pRoute rts)
+    
+------------------------------------------------------------------------------
+route' :: MonadSnap m
+       => m ()           -- ^ action to run before we call the user handler
+       -> [ByteString]   -- ^ the \"context\"; the list of path segments we've
+                         -- already successfully matched, in reverse order
+       -> [ByteString]   -- ^ the list of path segments we haven't yet matched
+       -> Params
+       -> Route a m
+       -> m a
+route' pre !ctx _ !params (Action action) =
+    localRequest (updateContextPath (B.length ctx') . updateParams)
+                 (pre >> action)
+  where
+    ctx' = B.intercalate (B.pack [c2w '/']) (reverse ctx)
+    updateParams req = setRqParams (List.unionBy ((==) `on` fst) params (rqParams req)) req
+
+route' pre !ctx [] !params (Capture _ _  fb) =
+    route' pre ctx [] params fb
+
+route' pre !ctx paths@(cwd:rest) !params (Capture p rt fb)
+    | B.null cwd = fallback
+    | otherwise  = m <|> fallback
+  where
+    fallback = route' pre ctx paths params fb
+    m = maybe pass
+              (\cwd' -> let params' = (p,Just cwd):params
+                        in route' pre (cwd:ctx) rest params' rt)
+              (urlDecode cwd)
+
+route' pre !ctx [] !params (Dir _ fb) =
+    route' pre ctx [] params fb
+route' pre !ctx (cwd:rest) !params (Dir rtm fb) = do
+    cwd' <- maybe pass return $ urlDecode cwd
+    case H.lookup cwd' rtm of
+      Just rt -> (route' pre (cwd:ctx) rest params rt) <|>
+                 (route' pre ctx (cwd:rest) params fb)
+      Nothing -> route' pre ctx (cwd:rest) params fb
+
+route' _ _ _ _ NoRoute = pass
+    
+
+data Route a m = Action ((MonadSnap m) => m a)   -- wraps a 'Snap' action
+               -- captures the dir in a param
+               | Capture ByteString (Route a m) (Route a m)
+               -- match on a dir
+               | Dir (HashMap ByteString (Route a m)) (Route a m)
+               | NoRoute
+
+
+
+------------------------------------------------------------------------------
+splitPath :: ByteString -> [ByteString]
+splitPath = B.splitWith (== (c2w '/'))
+
+------------------------------------------------------------------------------
+pRoute :: MonadSnap m => (ByteString, m a) -> Route a m
+pRoute (r, a) = foldr f (Action a) hier
+  where
+    hier   = filter (not . B.null) $ B.splitWith (== (c2w '/')) r
+    f s rt = if B.head s == c2w ':'
+        then Capture (B.tail s) rt NoRoute
+        else Dir (H.fromList [(s, rt)]) NoRoute
+
+------------------------------------------------------------------------------
+instance Monoid (Route a m) where
+    mempty = NoRoute
+
+    mappend NoRoute r = r
+
+    mappend l@(Action a) r = case r of
+      (Action a')       -> Action (a <|> a')
+      (Capture p r' fb) -> Capture p r' (mappend fb l)
+      (Dir _ _)         -> mappend (Dir H.empty l) r
+      NoRoute           -> l
+
+    -- Whenever we're unioning two Captures and their capture variables
+    -- differ, we have an ambiguity. We resolve this in the following order:
+    --   1. Prefer whichever route is longer
+    --   2. Else, prefer whichever has the earliest non-capture
+    --   3. Else, prefer the right-hand side
+    mappend l@(Capture p r' fb) r = case r of
+      (Action _)           -> Capture p r' (mappend fb r)
+      (Capture p' r'' fb')
+              | p == p'    -> Capture p (mappend r' r'') (mappend fb fb')
+              | rh' > rh'' -> Capture p r' (mappend fb r)
+              | rh' < rh'' -> Capture p' r'' (mappend fb' l)
+              | en' < en'' -> Capture p r' (mappend fb r)
+              | otherwise  -> Capture p' r'' (mappend fb' l)
+        where
+          rh'  = routeHeight r'
+          rh'' = routeHeight r''
+          en'  = routeEarliestNC r' 1
+          en'' = routeEarliestNC r'' 1
+      (Dir rm fb')         -> Dir rm (mappend fb' l)
+      NoRoute              -> l
+
+    mappend l@(Dir rm fb) r = case r of
+      (Action _)      -> Dir rm (mappend fb r)
+      (Capture _ _ _) -> Dir rm (mappend fb r)
+      (Dir rm' fb')   -> Dir (H.unionWith mappend rm rm') (mappend fb fb')
+      NoRoute         -> l
+
+------------------------------------------------------------------------------
+routeHeight :: Route a m -> Int
+routeHeight r = case r of
+  NoRoute          -> 1
+  (Action _)       -> 1
+  (Capture _ r' _) -> 1 + routeHeight r'
+  (Dir rm _)       -> 1 + foldl max 1 (map routeHeight $ H.elems rm)
+
+
+------------------------------------------------------------------------------
+routeEarliestNC :: Route a m -> Int -> Int
+routeEarliestNC r n = case r of
+  NoRoute           -> n
+  (Action _)        -> n
+  (Capture _ r' _)  -> routeEarliestNC r' n+1
+  (Dir _ _)         -> n
