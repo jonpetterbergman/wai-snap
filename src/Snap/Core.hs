@@ -386,7 +386,7 @@ addHeader :: (HasHeaders a) => CI ByteString -> ByteString -> a -> a
 addHeader k v = updateHeaders ((k,v):)
 
 rqPathInfo :: Request -> ByteString
-rqPathInfo = toByteString . encodePathSegments . pathInfo
+rqPathInfo = Char8.drop 1 . toByteString . encodePathSegments . pathInfo
 
 setRqPathInfo :: ByteString -> Request -> Request
 setRqPathInfo b r = r { pathInfo = decodePathSegments b }
@@ -662,7 +662,9 @@ updateContextPath n req | n > 0     = setRqPathInfo pinfo req
 -- | route    
 route :: MonadSnap m => [(ByteString, m a)] -> m a    
 route rts = do
+    liftIO $ putStrLn "Entered route"
     p <- getsRequest rqPathInfo
+    liftIO $ putStrLn $ "rqPathInfo: " ++ show p
     route' (return ()) [] (splitPath p) [] rts'
   where
     rts' = mconcat (map pRoute rts)
@@ -678,13 +680,13 @@ route' :: MonadSnap m
        -> m a
 route' pre !ctx _ !params (Action action) =
     localRequest (updateContextPath (B.length ctx') . updateParams)
-                 (pre >> action)
+                   (pre >> action)
   where
     ctx' = B.intercalate (B.pack [c2w '/']) (reverse ctx)
     updateParams req = setRqParams (List.unionBy ((==) `on` fst) params (rqParams req)) req
 
 route' pre !ctx [] !params (Capture _ _  fb) =
-    route' pre ctx [] params fb
+  route' pre ctx [] params fb
 
 route' pre !ctx paths@(cwd:rest) !params (Capture p rt fb)
     | B.null cwd = fallback
@@ -697,15 +699,16 @@ route' pre !ctx paths@(cwd:rest) !params (Capture p rt fb)
               (urlDecode cwd)
 
 route' pre !ctx [] !params (Dir _ fb) =
-    route' pre ctx [] params fb
+  route' pre ctx [] params fb
 route' pre !ctx (cwd:rest) !params (Dir rtm fb) = do
-    cwd' <- maybe pass return $ urlDecode cwd
+    cwd' <- maybe ((liftIO $ putStrLn "pass!") >> pass) return $ urlDecode cwd
     case H.lookup cwd' rtm of
       Just rt -> (route' pre (cwd:ctx) rest params rt) <|>
                  (route' pre ctx (cwd:rest) params fb)
       Nothing -> route' pre ctx (cwd:rest) params fb
 
-route' _ _ _ _ NoRoute = pass
+route' _ _ _ _ NoRoute = 
+    pass
     
 
 data Route a m = Action ((MonadSnap m) => m a)   -- wraps a 'Snap' action
