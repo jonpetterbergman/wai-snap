@@ -662,9 +662,7 @@ updateContextPath n req | n > 0     = setRqPathInfo pinfo req
 -- | route    
 route :: MonadSnap m => [(ByteString, m a)] -> m a    
 route rts = do
-    liftIO $ putStrLn "Entered route"
     p <- getsRequest rqPathInfo
-    liftIO $ putStrLn $ "rqPathInfo: " ++ show p
     route' (return ()) [] (splitPath p) [] rts'
   where
     rts' = mconcat (map pRoute rts)
