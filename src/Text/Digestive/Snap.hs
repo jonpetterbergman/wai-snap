@@ -18,13 +18,21 @@ import Text.Digestive.Form.Internal(FormTree(..))
 import Text.Digestive.Form.List(DefaultList)
 import Text.Digestive.Types(Path,Env,FormInput(..),toPath)
 import Text.Digestive.View(View,postForm,getForm)
-import Network.Wai(queryString)
-import Network.Wai.Digestive(bodyFormEnv_,queryFormEnv)
-import Control.Monad.Trans.Resource(ResourceT)
-import Control.Monad.Trans(lift,liftIO)
+import Network.Wai(queryString,Request)
+import Network.Wai.Parse(parseRequestBody,tempFileBackEnd,File,fileContent)
+import Control.Monad.Trans.Resource(ResourceT,getInternalState)
+import Control.Monad.Trans(lift,liftIO,MonadIO)
 import Network.HTTP.Types.Method(StdMethod(..))
-import Network.HTTP.Types.QueryLike(QueryLike(..))
+import Network.HTTP.Types.QueryLike(QueryLike(..),toQueryValue)
 import Network.HTTP.Types.URI(Query)
+import Data.Function(on)
+
+newtype FileQuery = FileQuery [File FilePath]
+
+instance QueryLike FileQuery where
+  toQuery (FileQuery files) =
+    map (\(k,v) -> (k,toQueryValue $ fileContent v)) files
+
 
 runForm :: MonadSnap m 
         => Text
@@ -34,7 +42,7 @@ runForm name frm =
   do
     r <- lift $ getRequest
     case rqMethod r of
-      (Right POST) -> postForm name (mapFM lift frm) (const $ bodyFormEnv_ r) 
+      (Right POST) -> postForm name (mapFM lift frm) (const $ bodyFormEnv__ r) 
       _ -> fmap (,Nothing) $ getForm name (mapFM lift frm)
 
 runFormGet :: MonadSnap m 
@@ -60,6 +68,12 @@ mapFM f (Map t ft) = Map (\x -> f $ t x) (mapFM f ft)
 mapFM f (Monadic act) = Monadic $ f (fmap (mapFM f) act)
 mapFM f (List dl ft) = List (fmap (mapFM f) dl) (mapFM f ft)
 mapFM f (Metadata md ft) = Metadata md $ mapFM f ft
+
+bodyFormEnv__ :: (Monad m,MonadIO io) => Request -> ResourceT io (Env m) 
+bodyFormEnv__ req = do
+  st <- getInternalState
+  (query, files) <- liftIO $ parseRequestBody (tempFileBackEnd st) req
+  return $ queryFormEnv_ (toQuery query ++ toQuery (FileQuery files))
 
 -- | Build an 'Text.Digestive.Types.Env' from a query
 queryFormEnv_ :: (QueryLike q, Monad m) => q -> Env m
