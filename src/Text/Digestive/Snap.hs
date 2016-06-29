@@ -9,7 +9,7 @@ import Text.Digestive.Form(Form)
 import Text.Digestive.Form.Internal(FormTree(..))
 import Text.Digestive.Form.List(DefaultList)
 import Text.Digestive.View(View,postForm)
-import Network.Wai.Digestive(requestFormEnv_)
+import Network.Wai.Digestive(bodyFormEnv_)
 import Control.Monad.Trans.Resource(ResourceT)
 import Control.Monad.Trans(lift)
 
@@ -20,7 +20,7 @@ runForm :: MonadSnap m
 runForm name frm = 
   do
     r <- lift $ getRequest
-    postForm name (mapFM lift frm) (const $ requestFormEnv_ r) 
+    postForm name (mapFM lift frm) (const $ bodyFormEnv_ r) 
 
 mapFM :: Functor m => (forall a. m a -> m' a) -> Form v m b -> Form v m' b
 mapFM f (Ref ref ft) = Ref ref $ mapFM f ft

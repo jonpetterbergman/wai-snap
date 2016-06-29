@@ -343,7 +343,7 @@ getServerPort :: MonadSnap m => m Int
 getServerPort = liftSnap $ liftM _snapPort sget
 
 rqServerName :: Request -> Maybe ByteString
-rqServerName = requestHeaderHost
+rqServerName = fmap (Char8.takeWhile (/= ':')) . requestHeaderHost
 
 -- | Grabs something out of the 'Request' object, using the given projection
 -- function. See 'gets'.
