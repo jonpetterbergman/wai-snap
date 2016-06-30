@@ -444,11 +444,7 @@ strictize = S.concat . L.toChunks
 unsafeFromHex :: (Enum a, Num a, Bits a) => ByteString -> a
 unsafeFromHex = S.foldl' f 0
   where
-#if MIN_VERSION_base(4,5,0)
     sl = unsafeShiftL
-#else
-    sl = shiftL
-#endif
 
     f !cnt !i = sl cnt 4 .|. nybble i
 

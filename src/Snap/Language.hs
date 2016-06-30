@@ -52,6 +52,7 @@ import           Data.Maybe                      (mapMaybe,
 import           Data.Map                        (Map,
                                                   toList)
 import           Data.Tuple                      (swap)
+import           Network.Wai                     (rawPathInfo)
 
 range :: Parser String
 range = (++) <$> mletters <*> (fmap concat $ many' $ (:) <$> (char '-') <*> mletters)
@@ -147,7 +148,7 @@ matchSuffix str sfxs = listToMaybe $ mapMaybe go sfxs
 -- 'getSuffixLanguage' with our previously defined mapping will return 'EN' and 'rqPathInfo' will be changed to:
 --
 -- > /resource?param=value
-getSuffixLanguage :: MonadSnap m
+getSuffixLanguage :: (MonadSnap m,Show a)
                   => RangeMapping a
                   -> m a
 getSuffixLanguage rangeMapping = 
@@ -157,7 +158,7 @@ getSuffixLanguage rangeMapping =
       Nothing -> pass
       Just (rqPathInfo',val) -> 
         do
-          putRequest $ setRqPathInfo rqPathInfo' r
+          putRequest $ let r' = setRqPathInfo rqPathInfo' r in r' { rawPathInfo = maybe (rawPathInfo r') fst $ matchSuffix (rawPathInfo r') $ suffixes rangeMapping }
           return val
 
 -- | Change, or remove, the language suffix of an URI.
