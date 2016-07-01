@@ -53,6 +53,7 @@ import           Data.Map                        (Map,
                                                   toList)
 import           Data.Tuple                      (swap)
 import           Network.Wai                     (rawPathInfo)
+import           Control.Arrow                   (first,second)
 
 range :: Parser String
 range = (++) <$> mletters <*> (fmap concat $ many' $ (:) <$> (char '-') <*> mletters)
@@ -168,10 +169,19 @@ switchSuffixLanguage :: Eq a
                      -> Maybe a    -- ^ The language to be appended to the URI, or Nothing to remove language suffix.
                      -> ByteString
 switchSuffixLanguage rangeMapping uri lang = maybe (addSuffix lang path) (addSuffix lang . fst) $ matchSuffix path $ suffixes rangeMapping
-  where (path,params)    = BC.break ((==) '?') uri
-        addSuffix lang p = B.concat [p,findSfx lang,params]
+  where (hst,pathQ)      = splitPathHost uri
+        (path,params)    = BC.break ((==) '?') pathQ
+        addSuffix lang p = B.concat [hst,p,findSfx lang,params]
         findSfx Nothing  = B.empty
         findSfx (Just l) = maybe B.empty id $ lookup l $ map swap $ suffixes rangeMapping
+
+splitPathHost :: ByteString -> (ByteString,ByteString)
+splitPathHost bs | "http://" `BC.isPrefixOf` bs = first (mappend "http://") $ go $ BC.drop 7 bs
+                 | "https://" `BC.isPrefixOf` bs = first (mappend "https://") $ go $ BC.drop 8 bs
+                 | otherwise = ("",bs)
+  where go = second notEmpty . BC.break (== '/')
+        notEmpty "" = "/"                     
+        notEmpty xs = xs
 
 -- | Set the Content-Language header in the response.
 setContentLanguage :: (Eq a, MonadSnap m)
